@@ -13,6 +13,17 @@ LDFLAGS = -lopencm3_stm32f4 \
 	-mfloat-abi=hard -mfpu=fpv4-sp-d16 \
 	-L../libopencm3/lib
 
+ifdef F401
+
+LDFLAGS = -lopencm3_stm32f4 \
+	-Wl,-T,platforms/stm32/f401re.ld -nostartfiles -lc -lnosys \
+	-Wl,-Map=mapfile -mthumb -mcpu=cortex-m4 -Wl,-gc-sections \
+	-mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+	-L../libopencm3/lib
+
+endif
+
+
 VPATH += platforms/stm32
 
 SRC += 	cdcacm.c	\
