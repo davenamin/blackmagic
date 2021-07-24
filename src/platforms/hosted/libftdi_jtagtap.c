@@ -22,14 +22,12 @@
  *
  */
 
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-
-#include <assert.h>
-
 #include "general.h"
+#include <unistd.h>
+#include <assert.h>
+#include <ftdi.h>
 #include "ftdi_bmp.h"
+
 
 extern cable_desc_t *active_cable;
 extern struct ftdi_context *ftdic;

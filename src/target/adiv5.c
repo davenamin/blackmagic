@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2015  Black Sphere Technologies Ltd.
  * Written by Gareth McMullin <gareth@blacksphere.co.nz>
- * Copyright (C) 2018 - 2020 Uwe Bonnes
+ * Copyright (C) 2018 - 2021 Uwe Bonnes
  *                           (bon@elektron.ikp.physik.tu-darmstadt.de)
  *
  * This program is free software: you can redistribute it and/or modify
@@ -321,8 +321,11 @@ uint64_t adiv5_ap_read_pidr(ADIv5_AP_t *ap, uint32_t addr)
  * - fails reading outside SYSROM when halted from WFI and
  *   DBGMCU_CR not set.
  *
+ * E.g. Stm32F0
+ * - fails reading DBGMCU when under reset
+ *
  * Keep a copy of DEMCR at startup to restore with exit, to
- * not interrupt tracing initialed by the CPU.
+ * not interrupt tracing initiated by the CPU.
  */
 static bool cortexm_prepare(ADIv5_AP_t *ap)
 {
@@ -331,7 +334,7 @@ static bool cortexm_prepare(ADIv5_AP_t *ap)
 	uint32_t dhcsr_ctl = CORTEXM_DHCSR_DBGKEY |	CORTEXM_DHCSR_C_DEBUGEN |
 		CORTEXM_DHCSR_C_HALT;
 	uint32_t dhcsr_valid = CORTEXM_DHCSR_S_HALT | CORTEXM_DHCSR_C_DEBUGEN;
-#ifdef PLATFORM_HAS_DEBUG
+#if defined(ENABLE_DEBUG) && defined(PLATFORM_HAS_DEBUG)
 	uint32_t start_time = platform_time_ms();
 #endif
 	uint32_t dhcsr;
@@ -339,6 +342,8 @@ static bool cortexm_prepare(ADIv5_AP_t *ap)
 	while (true) {
 		adiv5_mem_write(ap, CORTEXM_DHCSR, &dhcsr_ctl, sizeof(dhcsr_ctl));
 		dhcsr = adiv5_mem_read32(ap, CORTEXM_DHCSR);
+		/* ADIV5_DP_CTRLSTAT_READOK is always set e.g. on STM32F7 even so
+		   CORTEXM_DHCS reads nonsense*/
 		/* On a sleeping STM32F7, invalid DHCSR reads with e.g. 0xffffffff and
 		 * 0x0xA05F0000  may happen.
 		 * M23/33 will have S_SDE set when debug is allowed
@@ -402,23 +407,20 @@ static bool cortexm_prepare(ADIv5_AP_t *ap)
 }
 
 /* Return true if we find a debuggable device.*/
-static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, int num_entry)
+static void adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, int num_entry)
 {
 	(void) num_entry;
 	addr &= 0xfffff000; /* Mask out base address */
 	if (addr == 0) /* No rom table on this AP */
-		return false;
-	uint32_t cidr = adiv5_ap_read_id(ap, addr + CIDR0_OFFSET);
-	if ((cidr & ~CID_CLASS_MASK) != CID_PREAMBLE) {
-		/* Maybe caused by a not halted CortexM */
-		if ((ap->idr & 0xf) == ARM_AP_TYPE_AHB) {
-			if (!cortexm_prepare(ap))
-				return false; /* Halting failed! */
-			/* CPU now halted, read cidr again. */
-			cidr = adiv5_ap_read_id(ap, addr + CIDR0_OFFSET);
-		}
+		return;
+	volatile uint32_t cidr;
+	cidr = adiv5_ap_read_id(ap, addr + CIDR0_OFFSET);
+	if (ap->dp->fault) {
+		DEBUG_WARN("CIDR read timeout on AP%d, aborting.\n", ap->apsel);
+		return;
 	}
-	bool res = false;
+	if ((cidr & ~CID_CLASS_MASK) != CID_PREAMBLE)
+				return;
 #if defined(ENABLE_DEBUG)
 	char indent[recursion + 1];
 
@@ -428,7 +430,7 @@ static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, 
 
 	if (adiv5_dp_error(ap->dp)) {
 		DEBUG_WARN("%sFault reading ID registers\n", indent);
-		return false;
+		return;
 	}
 
 	/* CIDR preamble sanity check */
@@ -436,7 +438,7 @@ static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, 
 		DEBUG_WARN("%s%d 0x%08" PRIx32": 0x%08" PRIx32
 			  " <- does not match preamble (0x%X)\n",
 			  indent + 1, num_entry, addr, cidr, CID_PREAMBLE);
-		return false;
+		return;
 	}
 
 	uint64_t pidr = adiv5_ap_read_pidr(ap, addr);
@@ -464,8 +466,17 @@ static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, 
 			ap->ap_designer = designer;
 			ap->ap_partno   = partno;
 			if ((ap->ap_designer == AP_DESIGNER_ATMEL) && (ap->ap_partno == 0xcd0)) {
-				cortexm_probe(ap);
-				return true;
+#define SAMX5X_DSU_CTRLSTAT			0x41002100
+#define SAMX5X_STATUSB_PROT			(1 << 16)
+				uint32_t ctrlstat = adiv5_mem_read32(ap, SAMX5X_DSU_CTRLSTAT);
+				if (ctrlstat & SAMX5X_STATUSB_PROT) {
+					/* A protected SAMx5x device is found.
+					 * Handle it here, as access only to limited memory region
+					 * is allowed
+					 */
+					cortexm_probe(ap);
+					return;
+				}
 			}
 		}
 		for (int i = 0; i < 960; i++) {
@@ -486,7 +497,7 @@ static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, 
 			}
 
 			/* Probe recursively */
-			res = adiv5_component_probe(
+			adiv5_component_probe(
 				ap, addr + (entry & ADIV5_ROM_ROMENTRY_OFFSET),
 				recursion + 1, i);
 		}
@@ -499,7 +510,7 @@ static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, 
 			DEBUG_WARN("%s0x%" PRIx32 ": 0x%02" PRIx32 "%08" PRIx32
 				  " <- does not match ARM JEP-106\n",
 				  indent, addr, (uint32_t)(pidr >> 32), (uint32_t)pidr);
-			return false;
+			return;
 		}
 
 		/* ADIv6: For CoreSight components, read DEVTYPE and ARCHID */
@@ -544,11 +555,11 @@ static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, 
 				switch (pidr_pn_bits[i].arch) {
 				case aa_cortexm:
 					DEBUG_INFO("%s-> cortexm_probe\n", indent + 1);
-					res = cortexm_probe(ap);
+					cortexm_probe(ap);
 					break;
 				case aa_cortexa:
 					DEBUG_INFO("\n -> cortexa_probe\n");
-					res = cortexa_probe(ap, addr);
+					cortexa_probe(ap, addr);
 					break;
 				default:
 					DEBUG_INFO("\n");
@@ -564,7 +575,7 @@ static bool adiv5_component_probe(ADIv5_AP_t *ap, uint32_t addr, int recursion, 
 				  (uint32_t)(pidr >> 32), (uint32_t)pidr, dev_type, arch_id);
 		}
 	}
-	return res;
+	return;
 }
 
 ADIv5_AP_t *adiv5_new_ap(ADIv5_DP_t *dp, uint8_t apsel)
@@ -587,6 +598,15 @@ ADIv5_AP_t *adiv5_new_ap(ADIv5_DP_t *dp, uint8_t apsel)
 
 	if(!tmpap.idr) /* IDR Invalid */
 		return NULL;
+	tmpap.csw = adiv5_ap_read(&tmpap, ADIV5_AP_CSW) &
+		~(ADIV5_AP_CSW_SIZE_MASK | ADIV5_AP_CSW_ADDRINC_MASK);
+
+	if (tmpap.csw & ADIV5_AP_CSW_TRINPROG) {
+		DEBUG_WARN("AP %d: Transaction in progress. AP is not be usable!\n",
+			apsel);
+		return NULL;
+	}
+
 	/* It's valid to so create a heap copy */
 	ap = malloc(sizeof(*ap));
 	if (!ap) {			/* malloc failed: heap exhaustion */
@@ -596,25 +616,49 @@ ADIv5_AP_t *adiv5_new_ap(ADIv5_DP_t *dp, uint8_t apsel)
 
 	memcpy(ap, &tmpap, sizeof(*ap));
 
-	ap->csw = adiv5_ap_read(ap, ADIV5_AP_CSW) &
-		~(ADIV5_AP_CSW_SIZE_MASK | ADIV5_AP_CSW_ADDRINC_MASK);
-
-	if (ap->csw & ADIV5_AP_CSW_TRINPROG) {
-		DEBUG_WARN("AP transaction in progress.  Target may not be usable.\n");
-		ap->csw &= ~ADIV5_AP_CSW_TRINPROG;
-	}
-
 #if defined(ENABLE_DEBUG)
 	uint32_t cfg = adiv5_ap_read(ap, ADIV5_AP_CFG);
 	DEBUG_INFO("AP %3d: IDR=%08"PRIx32" CFG=%08"PRIx32" BASE=%08" PRIx32
-			   " CSW=%08"PRIx32"\n", apsel, ap->idr, cfg, ap->base, ap->csw);
+			   " CSW=%08"PRIx32, apsel, ap->idr, cfg, ap->base, ap->csw);
+	DEBUG_INFO(" (AHB-AP var%" PRIx32 " rev%" PRIx32 "\n",
+			   (ap->idr >> 4) & 0xf, ap->idr >> 28);
 #endif
 	adiv5_ap_ref(ap);
 	return ap;
 }
 
+/* No real AP on RP2040. Special setup.*/
+static void rp_rescue_setup(ADIv5_DP_t *dp)
+{
+	ADIv5_AP_t *ap = malloc(sizeof(*ap));
+	if (!ap) {			/* malloc failed: heap exhaustion */
+		DEBUG_WARN("malloc: failed in %s\n", __func__);
+		return;
+	}
+	memset(ap, 0, sizeof(ADIv5_AP_t));
+	ap->dp = dp;
+	extern void rp_rescue_probe(ADIv5_AP_t *);
+	rp_rescue_probe(ap);
+	return;
+}
+
 void adiv5_dp_init(ADIv5_DP_t *dp)
 {
+#define DPIDR_PARTNO_MASK 0x0ff00000
+/* Check IDCODE for a valid designer and sensible PARTNO*/
+	if (((dp->idcode & 0xfff) == 0)  ||
+		((dp->idcode & DPIDR_PARTNO_MASK)) == DPIDR_PARTNO_MASK) {
+		DEBUG_WARN("Invalid DP idcode %08" PRIx32 "\n", dp->idcode);
+		free(dp);
+		return;
+	}
+	if (dp->idcode == 0x10212927) {
+		rp_rescue_setup(dp);
+		return;
+	}
+	DEBUG_INFO("DPIDR 0x%08" PRIx32 " (v%d %srev%d)\n", dp->idcode,
+			   (uint8_t)((dp->idcode >> 12) & 0xf),
+			   (dp->idcode & 0x10000) ? "MINDP " : "", (uint16_t)(dp->idcode >> 28));
 	volatile uint32_t ctrlstat = 0;
 #if PC_HOSTED  == 1
 	platform_adiv5_dp_defaults(dp);
@@ -658,10 +702,10 @@ void adiv5_dp_init(ADIv5_DP_t *dp)
 			break;
 		if (platform_timeout_is_expired(&timeout)) {
 			DEBUG_INFO("DEBUG Power-Up failed\n");
+			free(dp); /* No AP that referenced this DP so long*/
 			return;
 		}
 	}
-
 	/* This AP reset logic is described in ADIv5, but fails to work
 	 * correctly on STM32.	CDBGRSTACK is never asserted, and we
 	 * just wait forever.  This scenario is described in B2.4.1
@@ -688,18 +732,10 @@ void adiv5_dp_init(ADIv5_DP_t *dp)
 		}
 	}
 
-	bool res = false;
-	uint32_t dp_idcode = adiv5_dp_read(dp, ADIV5_DP_IDCODE);
-	if ((dp_idcode & ADIV5_DP_VERSION_MASK) == ADIV5_DPv2) {
-		/* Read TargetID. Can be done with device in WFI, sleep or reset!*/
-		adiv5_dp_write(dp, ADIV5_DP_SELECT, ADIV5_DP_BANK2);
-		dp->targetid = adiv5_dp_read(dp, ADIV5_DP_CTRLSTAT);
-		adiv5_dp_write(dp, ADIV5_DP_SELECT, ADIV5_DP_BANK0);
-		DEBUG_INFO("TARGETID %08" PRIx32 "\n", dp->targetid);
-	}
 	/* Probe for APs on this DP */
 	uint32_t last_base = 0;
 	int void_aps = 0;
+	dp->refcnt++;
 	for(int i = 0; (i < 256) && (void_aps < 8); i++) {
 		ADIv5_AP_t *ap = NULL;
 #if PC_HOSTED == 1
@@ -714,10 +750,12 @@ void adiv5_dp_init(ADIv5_DP_t *dp)
 			if (dp->ap_cleanup)
 				dp->ap_cleanup(i);
 #endif
-			if (i == 0)
+			if (i == 0) {
+				adiv5_dp_unref(dp);
 				return;
-			else
+			} else {
 				continue;
+			}
 		}
 		if (ap->base == last_base) {
 			DEBUG_WARN("AP %d: Duplicate base\n", i);
@@ -726,6 +764,7 @@ void adiv5_dp_init(ADIv5_DP_t *dp)
 				dp->ap_cleanup(i);
 #endif
 			adiv5_ap_unref(ap);
+			adiv5_dp_unref(dp);
 			/* FIXME: Should we expect valid APs behind duplicate ones? */
 			return;
 		}
@@ -739,19 +778,22 @@ void adiv5_dp_init(ADIv5_DP_t *dp)
 		extern void efm32_aap_probe(ADIv5_AP_t *);
 		efm32_aap_probe(ap);
 
+		/* Halt the device and release from reset if reset is active!*/
+		if (!ap->apsel && ((ap->idr & 0xf) == ARM_AP_TYPE_AHB))
+			cortexm_prepare(ap);
 		/* Should probe further here to make sure it's a valid target.
 		 * AP should be unref'd if not valid.
 		 */
 
 		/* The rest should only be added after checking ROM table */
-		res = adiv5_component_probe(ap, ap->base, 0, 0);
-		if (!res)
-			adiv5_ap_unref(ap);
+		adiv5_component_probe(ap, ap->base, 0, 0);
+		adiv5_ap_unref(ap);
 	}
 	/* We halted at least CortexM for Romtable scan.
 	 * Release the devices now. Attach() will halt them again.*/
 	for (target *t = target_list; t; t = t->next)
 		target_halt_resume(t, false);
+	adiv5_dp_unref(dp);
 }
 
 #define ALIGNOF(x) (((x) & 3) == 0 ? ALIGN_WORD : \

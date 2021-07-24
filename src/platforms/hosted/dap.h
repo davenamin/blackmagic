@@ -65,7 +65,6 @@ enum
 void dap_led(int index, int state);
 void dap_connect(bool jtag);
 void dap_disconnect(void);
-void dap_swj_clock(uint32_t clock);
 void dap_transfer_configure(uint8_t idle, uint16_t count, uint16_t retry);
 void dap_swd_configure(uint8_t cfg);
 int dap_info(int info, uint8_t *data, int size);
@@ -91,4 +90,6 @@ int dbg_dap_cmd(uint8_t *data, int size, int rsize);
 void dap_jtagtap_tdi_tdo_seq(uint8_t *DO, bool final_tms, const uint8_t *TMS,
 							 const uint8_t *DI, int ticks);
 int dap_jtag_configure(void);
+void dap_swdptap_seq_out(uint32_t MS, int ticks);
+void dap_swdptap_seq_out_parity(uint32_t MS, int ticks);
 #endif // _DAP_H_

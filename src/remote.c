@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2019  Black Sphere Technologies Ltd.
  * Written by Dave Marples <dave@marples.net>
+ * Modified 2020 - 2021 by Uwe Bonnes (bon@elektron.ikp.physik.tu-darmstadt.de)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,7 +22,6 @@
 #include "general.h"
 #include "remote.h"
 #include "gdb_packet.h"
-#include "swdptap.h"
 #include "jtagtap.h"
 #include "gdb_if.h"
 #include "version.h"
@@ -144,7 +144,8 @@ void remotePacketProcessSWD(uint8_t i, char *packet)
 		if (i==2) {
 			remote_dp.dp_read = firmware_swdp_read;
 			remote_dp.low_access = firmware_swdp_low_access;
-			swdptap_init();
+			remote_dp.abort = firmware_swdp_abort;
+			swdptap_init(&remote_dp);
 			_respond(REMOTE_RESP_OK, 0);
 		} else {
 			_respond(REMOTE_RESP_ERR,REMOTE_ERROR_WRONGLEN);
@@ -153,27 +154,27 @@ void remotePacketProcessSWD(uint8_t i, char *packet)
 
     case REMOTE_IN_PAR: /* SI = In parity ============================= */
 		ticks=remotehston(2,&packet[2]);
-		badParity = swd_proc.swdptap_seq_in_parity(&param, ticks);
+		badParity = remote_dp.seq_in_parity(&param, ticks);
 		_respond(badParity?REMOTE_RESP_PARERR:REMOTE_RESP_OK,param);
 		break;
 
     case REMOTE_IN: /* Si = In ======================================= */
 		ticks=remotehston(2,&packet[2]);
-		param = swd_proc.swdptap_seq_in(ticks);
+		param = remote_dp.seq_in(ticks);
 		_respond(REMOTE_RESP_OK,param);
 		break;
 
     case REMOTE_OUT: /* So= Out ====================================== */
 		ticks=remotehston(2,&packet[2]);
 		param=remotehston(-1, &packet[4]);
-		swd_proc.swdptap_seq_out(param, ticks);
+		remote_dp.seq_out(param, ticks);
 		_respond(REMOTE_RESP_OK, 0);
 		break;
 
     case REMOTE_OUT_PAR: /* SO = Out parity ========================== */
 		ticks=remotehston(2,&packet[2]);
 		param=remotehston(-1, &packet[4]);
-		swd_proc.swdptap_seq_out_parity(param, ticks);
+		remote_dp.seq_out_parity(param, ticks);
 		_respond(REMOTE_RESP_OK, 0);
 		break;
 
@@ -194,6 +195,7 @@ void remotePacketProcessJTAG(uint8_t i, char *packet)
     case REMOTE_INIT: /* JS = initialise ============================= */
 		remote_dp.dp_read = fw_adiv5_jtagdp_read;
 		remote_dp.low_access = fw_adiv5_jtagdp_low_access;
+		remote_dp.abort = adiv5_jtagdp_abort;
 		jtagtap_init();
 		_respond(REMOTE_RESP_OK, 0);
 		break;
@@ -268,6 +270,7 @@ void remotePacketProcessGEN(uint8_t i, char *packet)
 
 {
 	(void)i;
+    uint32_t freq;
 	switch (packet[1]) {
     case REMOTE_VOLTAGE:
 		_respondS(REMOTE_RESP_OK,platform_target_voltage());
@@ -280,6 +283,14 @@ void remotePacketProcessGEN(uint8_t i, char *packet)
 
     case REMOTE_SRST_GET:
 		_respond(REMOTE_RESP_OK,platform_srst_get_val());
+		break;
+    case REMOTE_FREQ_SET:
+		platform_max_frequency_set( remotehston(8, packet + 2));
+		_respond(REMOTE_RESP_OK, 0);
+		break;
+    case REMOTE_FREQ_GET:
+		freq = platform_max_frequency_get();
+		_respond_buf(REMOTE_RESP_OK, (uint8_t*)&freq, 4);
 		break;
 
     case REMOTE_PWR_SET:
@@ -299,11 +310,11 @@ void remotePacketProcessGEN(uint8_t i, char *packet)
 #endif
 		break;
 
-#if !defined(BOARD_IDENT) && defined(PLATFORM_IDENT)
-# define BOARD_IDENT() PLATFORM_IDENT
+#if !defined(BOARD_IDENT) && defined(BOARD_IDENT)
+# define PLATFORM_IDENT() BOARD_IDENT
 #endif
 	case REMOTE_START:
-		_respondS(REMOTE_RESP_OK, BOARD_IDENT " " FIRMWARE_VERSION);
+		_respondS(REMOTE_RESP_OK, PLATFORM_IDENT ""  FIRMWARE_VERSION);
 		break;
 
     default:

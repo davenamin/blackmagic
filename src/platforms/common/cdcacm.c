@@ -34,13 +34,13 @@
 #endif
 #include "usbuart.h"
 #include "serialno.h"
+#include "version.h"
 
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/cdc.h>
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/usb/dfu.h>
-#include <stdlib.h>
 
 #define DFU_IF_NO 4
 
@@ -51,7 +51,7 @@ static int cdcacm_gdb_dtr = 1;
 
 static void cdcacm_set_modem_state(usbd_device *dev, int iface, bool dsr, bool dcd);
 
-static const struct usb_device_descriptor dev = {
+static const struct usb_device_descriptor dev_desc = {
 	.bLength = USB_DT_DEVICE_SIZE,
 	.bDescriptorType = USB_DT_DEVICE,
 	.bcdUSB = 0x0200,
@@ -143,7 +143,7 @@ static const struct usb_interface_descriptor gdb_comm_iface[] = {{
 	.bNumEndpoints = 1,
 	.bInterfaceClass = USB_CLASS_CDC,
 	.bInterfaceSubClass = USB_CDC_SUBCLASS_ACM,
-	.bInterfaceProtocol = USB_CDC_PROTOCOL_AT,
+	.bInterfaceProtocol = USB_CDC_PROTOCOL_NONE,
 	.iInterface = 4,
 
 	.endpoint = gdb_comm_endp,
@@ -173,7 +173,7 @@ static const struct usb_iface_assoc_descriptor gdb_assoc = {
 	.bInterfaceCount = 2,
 	.bFunctionClass = USB_CLASS_CDC,
 	.bFunctionSubClass = USB_CDC_SUBCLASS_ACM,
-	.bFunctionProtocol = USB_CDC_PROTOCOL_AT,
+	.bFunctionProtocol = USB_CDC_PROTOCOL_NONE,
 	.iFunction = 0,
 };
 
@@ -246,7 +246,7 @@ static const struct usb_interface_descriptor uart_comm_iface[] = {{
 	.bNumEndpoints = 1,
 	.bInterfaceClass = USB_CLASS_CDC,
 	.bInterfaceSubClass = USB_CDC_SUBCLASS_ACM,
-	.bInterfaceProtocol = USB_CDC_PROTOCOL_AT,
+	.bInterfaceProtocol = USB_CDC_PROTOCOL_NONE,
 	.iInterface = 5,
 
 	.endpoint = uart_comm_endp,
@@ -276,7 +276,7 @@ static const struct usb_iface_assoc_descriptor uart_assoc = {
 	.bInterfaceCount = 2,
 	.bFunctionClass = USB_CLASS_CDC,
 	.bFunctionSubClass = USB_CDC_SUBCLASS_ACM,
-	.bFunctionProtocol = USB_CDC_PROTOCOL_AT,
+	.bFunctionProtocol = USB_CDC_PROTOCOL_NONE,
 	.iFunction = 0,
 };
 
@@ -393,12 +393,10 @@ static const struct usb_config_descriptor config = {
 
 	.interface = ifaces,
 };
+static char serial_no[DFU_SERIAL_LENGTH];
 
-#if defined(STM32L0) || defined(STM32F3) || defined(STM32F4)
-static char serial_no[13];
-#else
-static char serial_no[9];
-#endif
+#define BOARD_IDENT "Black Magic Probe " PLATFORM_IDENT FIRMWARE_VERSION
+#define DFU_IDENT   "Black Magic Firmware Upgrade " PLATFORM_IDENT FIRMWARE_VERSION
 
 static const char *usb_strings[] = {
 	"Black Sphere Technologies",
@@ -420,7 +418,9 @@ static void dfu_detach_complete(usbd_device *dev, struct usb_setup_data *req)
 	platform_request_boot();
 
 	/* Reset core to enter bootloader */
+#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
 	scb_reset_core();
+#endif
 }
 
 static enum usbd_request_return_codes  cdcacm_control_request(usbd_device *dev,
@@ -551,9 +551,9 @@ void cdcacm_init(void)
 {
 	void exti15_10_isr(void);
 
-	serial_no_read(serial_no, sizeof(serial_no));
+	serial_no_read(serial_no);
 
-	usbdev = usbd_init(&USB_DRIVER, &dev, &config, usb_strings,
+	usbdev = usbd_init(&USB_DRIVER, &dev_desc, &config, usb_strings,
 			    sizeof(usb_strings)/sizeof(char *),
 			    usbd_control_buffer, sizeof(usbd_control_buffer));
 

@@ -20,8 +20,6 @@
  */
 #include "general.h"
 #include "gdb_if.h"
-#include "version.h"
-#include "platform.h"
 #include "target.h"
 
 #include <assert.h>
@@ -29,6 +27,7 @@
 #include <sys/time.h>
 
 #include "ftdi_bmp.h"
+#include <ftdi.h>
 
 struct ftdi_context *ftdic;
 
@@ -270,7 +269,7 @@ int ftdi_bmp_init(BMP_CL_OPTIONS_t *cl_opts, bmp_info_t *info)
 	int err;
 	cable_desc_t *cable = &cable_desc[0];
 	for(;  cable->name; cable++) {
-		if (strcmp(cable->name, cl_opts->opt_cable) == 0)
+		if (strncmp(cable->name, cl_opts->opt_cable, strlen(cable->name)) == 0)
 		 break;
 	}
 
@@ -282,7 +281,7 @@ int ftdi_bmp_init(BMP_CL_OPTIONS_t *cl_opts, bmp_info_t *info)
 	active_cable = cable;
 	memcpy(&active_state, &active_cable->init, sizeof(data_desc_t));
 	/* If swd_(read|write) is not given for the selected cable and
-	   the 'r' command line argument is give, assume resistor SWD
+	   the 'e' command line argument is give, assume resistor SWD
 	   connection.*/
 	if (cl_opts->external_resistor_swd &&
 		(active_cable->mpsse_swd_read.set_data_low  == 0) &&
@@ -376,6 +375,18 @@ int ftdi_bmp_init(BMP_CL_OPTIONS_t *cl_opts, bmp_info_t *info)
 	}
 	int index = 0;
 	ftdi_init[index++]= LOOPBACK_END; /* FT2232D gets upset otherwise*/
+	switch(ftdic->type) {
+	case TYPE_2232H:
+	case TYPE_4232H:
+	case TYPE_232H:
+		ftdi_init[index++] = EN_DIV_5;
+		break;
+	case TYPE_2232C:
+		break;
+	default:
+		DEBUG_WARN("FTDI Chip has no MPSSE\n");
+		goto error_2;
+	}
 	ftdi_init[index++]= TCK_DIVISOR;
 	/* Use CLK/2 for about 50 % SWDCLK duty cycle on FT2232c.*/
 	ftdi_init[index++]= 1;
@@ -617,4 +628,35 @@ const char *libftdi_target_voltage(void)
 			return "Absent";
 	}
 	return NULL;
+}
+
+static uint16_t divisor;
+void libftdi_max_frequency_set(uint32_t freq)
+{
+	uint32_t clock;
+	if (ftdic->type == TYPE_2232C)
+		clock = 12 * 1000 * 1000;
+	else
+		/* Undivided clock set during startup*/
+		clock = 60 * 1000 * 1000;
+	uint32_t div = (clock  + 2 * freq - 1)/ freq;
+	if ((div < 4) && (ftdic->type = TYPE_2232C))
+		div = 4; /* Avoid bad unsymetrict FT2232C clock at 6 MHz*/
+	divisor = div / 2 - 1;
+	uint8_t buf[3];
+	buf[0] = TCK_DIVISOR;
+	buf[1] = divisor & 0xff;
+	buf[2] = (divisor >> 8) & 0xff;
+	libftdi_buffer_write(buf, 3);
+}
+
+uint32_t libftdi_max_frequency_get(void)
+{
+	uint32_t clock;
+	if (ftdic->type == TYPE_2232C)
+		clock = 12 * 1000 * 1000;
+	else
+		/* Undivided clock set during startup*/
+		clock = 60 * 1000 * 1000;
+	return clock/ ( 2 *(divisor + 1));
 }

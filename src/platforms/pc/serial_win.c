@@ -17,7 +17,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <sys/types.h>
 #include "general.h"
 #include <windows.h>
 #include "remote.h"
@@ -67,7 +66,6 @@ static char *find_bmp_by_serial(const char *serial)
 
 int serial_open(BMP_CL_OPTIONS_t *cl_opts, char * serial)
 {
-	(void) serial; /* FIXME: Does Windows allow open with USB serial no? */
 	char device[256];
 	if (!cl_opts->opt_device)
 		cl_opts->opt_device = find_bmp_by_serial(serial);
@@ -145,7 +143,7 @@ int platform_buffer_read(uint8_t *data, int maxsize)
 	DWORD s;
 	uint8_t response = 0;
 	uint32_t startTime = platform_time_ms();
-	uint32_t endTime = platform_time_ms() + RESP_TIMEOUT;
+	uint32_t endTime = platform_time_ms() + cortexm_wait_timeout;
 	do {
 		if (!ReadFile(hComm, &response, 1, &s, NULL)) {
 			DEBUG_WARN("ERROR on read RESP\n");

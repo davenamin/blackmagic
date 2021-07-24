@@ -25,6 +25,13 @@
  *   Reference manual - STM32H7x3 advanced ARM®-based 32-bit MCUs Rev.3
  */
 
+/*
+ * While the ST document (RM 0433) claims that the stm32h750 only has 1 bank
+ * with 1 sector (128k) of user main memory flash (pages 151-152), we were able
+ * to write and successfully verify into other regions in bank 1 and also into
+ * bank 2 (0x0810 0000 as indicated for the other chips).
+ */
+
 #include "general.h"
 #include "target.h"
 #include "target_internal.h"
@@ -158,6 +165,10 @@ struct stm32h7_flash {
 	uint32_t regbase;
 };
 
+struct stm32h7_priv_s {
+	uint32_t dbg_cr;
+};
+
 static void stm32h7_add_flash(target *t,
                               uint32_t addr, size_t length, size_t blocksize)
 {
@@ -199,13 +210,14 @@ static bool stm32h7_attach(target *t)
 	target_mem_map_free(t);
 
 	/* Add RAM to memory map */
+	/* Table 7. Memory map and default device memory area attributes RM 0433, pg 130 */
 	target_add_ram(t, 0x00000000, 0x10000); /* ITCM Ram,  64 k */
 	target_add_ram(t, 0x20000000, 0x20000); /* DTCM Ram, 128 k */
 	target_add_ram(t, 0x24000000, 0x80000); /* AXI Ram,  512 k */
 	target_add_ram(t, 0x30000000, 0x20000); /* AHB SRAM1, 128 k */
-	target_add_ram(t, 0x32000000, 0x20000); /* AHB SRAM2, 128 k */
-	target_add_ram(t, 0x34000000, 0x08000); /* AHB SRAM3,  32 k */
-	target_add_ram(t, 0x38000000, 0x01000); /* AHB SRAM4,  32 k */
+	target_add_ram(t, 0x30020000, 0x20000); /* AHB SRAM2, 128 k */
+	target_add_ram(t, 0x30040000, 0x08000); /* AHB SRAM3,  32 k */
+	target_add_ram(t, 0x38000000, 0x10000); /* AHB SRAM4,  64 k */
 
 	/* Add the flash to memory map. */
 	stm32h7_add_flash(t, 0x8000000, 0x100000, FLASH_SECTOR_SIZE);
@@ -215,7 +227,9 @@ static bool stm32h7_attach(target *t)
 
 static void stm32h7_detach(target *t)
 {
-	target_mem_write32(t, DBGMCU_CR, t->target_storage);
+	struct stm32h7_priv_s *ps = (struct stm32h7_priv_s*)t->target_storage;
+
+	target_mem_write32(t, DBGMCU_CR, ps->dbg_cr);
 	cortexm_detach(t);
 }
 
@@ -227,7 +241,10 @@ bool stm32h7_probe(target *t)
 		t->attach = stm32h7_attach;
 		t->detach = stm32h7_detach;
 		target_add_commands(t, stm32h7_cmd_list, stm32h7_driver_str);
-		t->target_storage = target_mem_read32(t, DBGMCU_CR);
+		/* Save private storage */
+		struct stm32h7_priv_s *priv_storage = calloc(1, sizeof(*priv_storage));
+		priv_storage->dbg_cr = target_mem_read32(t, DBGMCU_CR);
+		t->target_storage = (void*)priv_storage;
 		/* RM0433 Rev 4 is not really clear, what bits are needed in DBGMCU_CR.
 		 * Maybe more flags needed?
 		 */

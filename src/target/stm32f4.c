@@ -106,7 +106,6 @@ static int stm32f4_flash_write(struct target_flash *f,
 #define DBGMCU_IDCODE	0xE0042000
 #define DBGMCU_CR		0xE0042004
 #define DBG_SLEEP		(1 <<  0)
-#define ARM_CPUID	0xE000ED00
 
 #define AXIM_BASE 0x8000000
 #define ITCM_BASE 0x0200000
@@ -208,8 +207,7 @@ bool stm32f4_probe(target *t)
 		/* F405 revision A have a wrong IDCODE, use ARM_CPUID to make the
 		 * distinction with F205. Revision is also wrong (0x2000 instead
 		 * of 0x1000). See F40x/F41x errata. */
-		uint32_t cpuid = target_mem_read32(t, ARM_CPUID);
-		if ((cpuid & 0xFFF0) == 0xC240)
+		if ((t->cpuid & 0xFFF0) == CORTEX_M4)
 			t->idcode = ID_STM32F40X;
 	}
 	switch(t->idcode) {
@@ -386,9 +384,9 @@ static int stm32f4_flash_erase(struct target_flash *f, target_addr addr,
 	stm32f4_flash_unlock(t);
 
 	enum align psize = ALIGN_WORD;
-	for (struct target_flash *f = t->flash; f; f = f->next) {
-		if (f->write == stm32f4_flash_write) {
-			psize = ((struct stm32f4_flash *)f)->psize;
+	for (struct target_flash *currf = t->flash; currf; currf = currf->next) {
+		if (currf->write == stm32f4_flash_write) {
+			psize = ((struct stm32f4_flash *)currf)->psize;
 		}
 	}
 	while(len) {
@@ -417,7 +415,7 @@ static int stm32f4_flash_erase(struct target_flash *f, target_addr addr,
 	/* Check for error */
 	sr = target_mem_read32(t, FLASH_SR);
 	if(sr & SR_ERROR_MASK) {
-		DEBUG_WARN("stm32f4 flash erase: sr error: 0x%" PRIu32 "\n", sr);
+		DEBUG_WARN("stm32f4 flash erase: sr error: 0x%" PRIx32 "\n", sr);
 		return -1;
 	}
 	return 0;
