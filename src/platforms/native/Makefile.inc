@@ -3,13 +3,13 @@ CC = $(CROSS_COMPILE)gcc
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
 CFLAGS += -Istm32/include -mcpu=cortex-m3 -mthumb \
-	-DSTM32F1 -DBLACKMAGIC -I../libopencm3/include \
-	-Iplatforms/stm32 -DDFU_SERIAL_LENGTH=9
+	-DSTM32F1 -DBLACKMAGIC -I../deps/libopencm3/include \
+	-Iplatforms/common/stm32 -DDFU_SERIAL_LENGTH=9
 
-LDFLAGS_BOOT := $(LDFLAGS) --specs=nano.specs -lopencm3_stm32f1 \
-	-Wl,-T,platforms/stm32/blackmagic.ld -nostartfiles -lc \
+LDFLAGS_BOOT := $(LDFLAGS) -lopencm3_stm32f1 -Lplatforms/native \
+	-Tnative.ld --specs=nano.specs -nostartfiles -lc \
 	-Wl,-Map=mapfile -mthumb -mcpu=cortex-m3 -Wl,-gc-sections \
-	-L../libopencm3/lib
+	-L../deps/libopencm3/lib
 LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8002000
 
 ifeq ($(ENABLE_DEBUG), 1)
@@ -18,12 +18,12 @@ else
 LDFLAGS += --specs=nosys.specs
 endif
 
-VPATH += platforms/stm32
+VPATH += platforms/common/stm32
 
-SRC += 	cdcacm.c	\
-	traceswodecode.c	\
+SRC +=               \
+	platform.c \
+	traceswodecode.c \
 	traceswo.c	\
-	usbuart.c	\
 	serialno.c	\
 	timing.c	\
 	timing_stm32.c	\
